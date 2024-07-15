@@ -10,9 +10,24 @@ from termcolor import cprint
 from tqdm import tqdm
 
 from src.datasets import ThingsMEGDataset
-from src.models import BasicConvClassifier
+from src.modelv3 import TransformerClassifier
 from src.utils import set_seed
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class LabelSmoothingCrossEntropy(nn.Module):
+    def __init__(self, smoothing=0.1):
+        super(LabelSmoothingCrossEntropy, self).__init__()
+        self.smoothing = smoothing
+
+    def forward(self, input, target):
+        log_probs = F.log_softmax(input, dim=-1)
+        weight = input.new_ones(input.size()) * self.smoothing / (input.size(-1) - 1)
+        weight.scatter_(-1, target.unsqueeze(-1), 1.0 - self.smoothing)
+        loss = (-weight * log_probs).sum(dim=-1).mean()
+        return loss
 
 @hydra.main(version_base=None, config_path="configs", config_name="config")
 def run(args: DictConfig):
@@ -39,14 +54,18 @@ def run(args: DictConfig):
     # ------------------
     #       Model
     # ------------------
-    model = BasicConvClassifier(
+    print(train_set.num_classes, train_set.seq_len, train_set.num_channels)
+    model = TransformerClassifier(
         train_set.num_classes, train_set.seq_len, train_set.num_channels
     ).to(args.device)
 
     # ------------------
     #     Optimizer
     # ------------------
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
+
+
+    loss_func = LabelSmoothingCrossEntropy(smoothing=0.1)
 
     # ------------------
     #   Start training
@@ -67,7 +86,9 @@ def run(args: DictConfig):
 
             y_pred = model(X)
             
-            loss = F.cross_entropy(y_pred, y)
+            # loss = F.cross_entropy(y_pred, y)
+            loss = loss_func(y_pred, y)
+
             train_loss.append(loss.item())
             
             optimizer.zero_grad()
